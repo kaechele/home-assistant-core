@@ -10,6 +10,7 @@ import homeassistant.util.dt as dt_util
 
 from tests.common import (
     assert_setup_component,
+    fire_time_changed,
     get_fixture_path,
     get_test_home_assistant,
 )
@@ -377,6 +378,62 @@ class TestTrendBinarySensor:
                 self.hass, "binary_sensor", {"binary_sensor": {"platform": "trend"}}
             )
         assert self.hass.states.all("binary_sensor") == []
+
+    def test_stale_samples_removed(self) -> None:
+        """Test samples outside of sample_duration are dropped."""
+        assert setup.setup_component(
+            self.hass,
+            "binary_sensor",
+            {
+                "binary_sensor": {
+                    "platform": "trend",
+                    "sensors": {
+                        "test_trend_sensor": {
+                            "entity_id": "sensor.test_state",
+                            "sample_duration": 10,
+                            "min_gradient": 1,
+                            "max_samples": 100,
+                        }
+                    },
+                }
+            },
+        )
+        self.hass.block_till_done()
+
+        count = 0
+        now = dt_util.utcnow()
+        for val in [10, 20, 30, 40]:
+            with patch("homeassistant.util.dt.utcnow", return_value=now):
+                self.hass.states.set("sensor.test_state", val)
+            self.hass.block_till_done()
+            count += 1
+
+            now += timedelta(seconds=2)
+            fire_time_changed(self.hass, now)
+            self.hass.block_till_done()
+
+        state = self.hass.states.get("binary_sensor.test_trend_sensor")
+        assert state.state == "on"
+        assert state.attributes["sample_count"] == count
+
+        now += timedelta(seconds=3)
+        fire_time_changed(self.hass, now)
+        self.hass.block_till_done()
+        count -= 1
+
+        state = self.hass.states.get("binary_sensor.test_trend_sensor")
+        assert state.state == "on"
+        assert state.attributes["sample_count"] == count
+
+        while count:
+            now += timedelta(seconds=2)
+            fire_time_changed(self.hass, now)
+            self.hass.block_till_done()
+            count -= 1
+
+            state = self.hass.states.get("binary_sensor.test_trend_sensor")
+            assert state.state == "on" if count >= 2 else "unknown"
+            assert state.attributes["sample_count"] == count
 
 
 async def test_reload(hass: HomeAssistant) -> None:
